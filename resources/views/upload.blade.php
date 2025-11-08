@@ -113,20 +113,75 @@
     function parseDateTime(value) {
         if (!value) return null;
 
+        // Kalau sudah format ISO, langsung pakai
         if (value.includes('T')) {
             const d = new Date(value);
             return isNaN(d.getTime()) ? null : d;
         }
 
-        const match = value.match(
-            /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/
-        );
-        if (!match) return null;
+        // Kalau formatnya 'YYYY-MM-DD HH:mm:ss'
+        const match = value.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+        if (match) {
+            const [_, y, m, d, h, i, s] = match.map(Number);
+            // buat date lokal (anggap waktu server = UTC+7 atau sesuai kebutuhan)
+            const dObj = new Date(y, m - 1, d, h, i, s);
+            return isNaN(dObj.getTime()) ? null : dObj;
+        }
 
-        const [_, y, m, d, h, i, s] = match.map(Number);
-        const dObj = new Date(Date.UTC(y, m - 1, d, h, i, s));
+        return null;
+    }
 
-        return isNaN(dObj.getTime()) ? null : dObj;
+    function formatHMS(sec) {
+        sec = parseInt(sec || 0, 10);
+        if (isNaN(sec) || sec < 0) return '-';
+
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = sec % 60;
+
+        const parts = [];
+        if (h) parts.push(h + 'h');
+        if (m) parts.push(m + 'm');
+        if (s || (!h && !m)) parts.push(s + 's');
+
+        return parts.join(' ');
+    }
+
+
+    function getStartDate(row) {
+        // fallback berurutan kalau ada variasi kolom
+        const val = row.upload_started_at || row.started_at || row.created_at;
+        return parseDateTime(val);
+    }
+
+    function getDurationDisplay(row) {
+        // 1. Kalau sudah selesai dan backend simpan last_duration_seconds → pakai itu (fix)
+        if (row.status === 'completed' &&
+            row.last_duration_seconds !== null &&
+            row.last_duration_seconds !== undefined) {
+            return formatHMS(row.last_duration_seconds);
+        }
+
+        // 2. Gunakan upload_started_at sebagai titik awal utama
+        const start = parseDateTime(row.upload_started_at);
+        if (!start) {
+            // fallback kalau entah kenapa upload_started_at kosong
+            const created = parseDateTime(row.created_at);
+            if (!created) return '-';
+            return formatHMS(Math.floor((Date.now() - created.getTime()) / 1000));
+        }
+
+        // 3. Kalau sudah punya finished_at (tapi belum ada last_duration_seconds)
+        if (row.finished_at && row.status === 'completed') {
+            const end = parseDateTime(row.finished_at) || new Date();
+            const diffSec = Math.max(Math.floor((end.getTime() - start.getTime()) / 1000), 0);
+            return formatHMS(diffSec);
+        }
+
+        // 4. Pending / Processing → hitung live sampai sekarang
+        const now = new Date();
+        const diffSec = Math.max(Math.floor((now.getTime() - start.getTime()) / 1000), 0);
+        return formatHMS(diffSec);
     }
 
 
@@ -149,27 +204,7 @@
             else if (row.status === 'completed') badge = 'bg-success';
             else if (row.status === 'failed') badge = 'bg-danger';
 
-            // HITUNG DURASI DI VIEW (tanpa ubah controller)
-            let diffSec = 0;
-
-            if (row.upload_started_at) {
-                const startDate = parseDateTime(row.upload_started_at);
-
-                if (startDate) {
-                    if (row.finished_at) {
-                        const endDate = parseDateTime(row.finished_at) || new Date();
-                        diffSec = Math.max(Math.round((endDate.getTime() - startDate.getTime()) / 1000), 0);
-                    } else {
-                        // belum selesai: hitung sampai sekarang
-                        const now = new Date();
-                        diffSec = Math.max(Math.round((now.getTime() - startDate.getTime()) / 1000), 0);
-                    }
-                }
-            } else if (typeof row.total_seconds !== 'undefined') {
-                diffSec = parseInt(row.total_seconds || 0, 10);
-            }
-
-            const duration = formatDuration(diffSec);
+            const duration = getDurationDisplay(row);
 
             bgTbody.innerHTML += `
                 <tr>
@@ -231,7 +266,7 @@
             });
     }
 
-    setInterval(loadBackgroundStatus, 3000);
+    setInterval(loadBackgroundStatus, 1000);
     loadBackgroundStatus();
 
     // === HANDLE UPLOAD  ===

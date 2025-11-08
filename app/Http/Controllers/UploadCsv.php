@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use App\Jobs\ProcessCsvUpload;
+use Carbon\Carbon;
 
 class UploadCsv extends Controller
 {
@@ -47,10 +48,18 @@ class UploadCsv extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'file' => 'required|mimes:csv,txt|max:51200',
+            'file' => 'required|mimes:csv,txt|max:512000',
         ]);
 
-        $uploadStartedAt = $request->input('upload_started_at') ?: now();
+        // ambil dari client (ISO) lalu konversi ke timezone app
+        $clientStarted = $request->input('upload_started_at');
+
+        if ($clientStarted) {
+            $uploadStartedAt = Carbon::parse($clientStarted)
+                ->setTimezone(config('app.timezone')); // contoh: Asia/Jakarta
+        } else {
+            $uploadStartedAt = now()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z');
+        }
 
         $file = $request->file('file');
 
@@ -59,25 +68,25 @@ class UploadCsv extends Controller
             time() . '_' . $file->getClientOriginalName()
         );
 
-        // buat log: pending, dengan waktu upload selesai
         $backgroundId = DB::table('csv_upload_background_process')->insertGetId([
-            'file_name'          => $file->getClientOriginalName(),
-            'status'             => 'pending',
-            'message'            => null,
-            'created_at'         => now(),
-            'updated_at'         => now(),
-            'upload_started_at'  => $uploadStartedAt,
-            'upload_finished_at' => now(),
+            'file_name'             => $file->getClientOriginalName(),
+            'status'                => 'pending',
+            'message'               => null,
+            'created_at'            => now()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z'),
+            'updated_at'            => now()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z'),
+            'upload_started_at'     => $uploadStartedAt,   // ✅ sudah sama formatnya
+            'upload_finished_at'    => now()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z'),              // ✅ sama format
             'processing_started_at' => null,
-            'finished_at'        => null,
+            'finished_at'           => null,
         ]);
 
         ProcessCsvUpload::dispatch($storedPath, $backgroundId);
 
-        // karena kita pakai fetch (AJAX), balas JSON, bukan redirect
         return response()->json([
-            'success' => true,
+            'success'       => true,
             'background_id' => $backgroundId,
+            'file_name'     => $file->getClientOriginalName(),
         ]);
     }
+
 }
